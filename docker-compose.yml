@@ -1,0 +1,162 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: cdn-alpha-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+    ports:
+      - "${POSTGRES_PORT}:5432"
+
+    volumes:
+      - cdn_alpha_postgres:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    networks:
+      - cdn-alpha-network
+
+  redis:
+    image: redis:8
+    container_name: cdn-alpha-redis
+    restart: unless-stopped
+
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD}
+
+    ports:
+      - "${REDIS_PORT}:6379"
+
+    volumes:
+      - cdn_alpha_redis:/data
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "--no-auth-warning",
+          "-a",
+          "${REDIS_PASSWORD}",
+          "PING",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    networks:
+      - cdn-alpha-network
+
+  nats:
+    image: nats:2
+    container_name: cdn-alpha-nats
+    restart: unless-stopped
+
+    command:
+      - "-js"
+      - "-sd"
+      - "/data"
+      - "-m"
+      - "8222"
+
+    ports:
+      - "${NATS_PORT}:4222"
+      - "${NATS_MONITOR_PORT}:8222"
+
+    volumes:
+      - cdn_alpha_nats:/data
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    networks:
+      - cdn-alpha-network
+
+  minio:
+    # Official MinIO image — use a pinned release tag in production.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    container_name: cdn-alpha-minio
+    restart: unless-stopped
+
+    command: server /data --console-address ":9001"
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+    ports:
+      - "${MINIO_API_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+
+    volumes:
+      - cdn_alpha_minio:/data
+
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+    networks:
+      - cdn-alpha-network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: cdn-alpha-api
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    ports:
+      - "4500:4500"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+    networks:
+      - cdn-alpha-network
+
+volumes:
+  cdn_alpha_postgres:
+    name: cdn_alpha_postgres
+
+  cdn_alpha_redis:
+    name: cdn_alpha_redis
+
+  cdn_alpha_nats:
+    name: cdn_alpha_nats
+
+  cdn_alpha_minio:
+    name: cdn_alpha_minio
+
+networks:
+  cdn-alpha-network:
+    name: cdn-alpha-network
+    driver: bridge

@@ -1,0 +1,80 @@
+
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.bin
+
+# Build directories
+/bin/
+/build/
+/dist/
+/out/
+
+# Go workspace
+go.work
+go.work.sum
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Logs
+*.log
+logs/
+
+# Test and coverage reports
+coverage.out
+coverage.txt
+coverage.html
+*.coverprofile
+
+# Vendor dependencies (uncomment if you don't want to commit vendor)
+/vendor/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Debugging
+__debug_bin
+*.prof
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Certificates and private keys
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Generated documentation
+/docs/generated/
+
+# Air live reload
+.air.toml.local
+tmp/
