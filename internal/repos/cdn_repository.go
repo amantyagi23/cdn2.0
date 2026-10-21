@@ -125,6 +125,20 @@ func (r *CDNRepository) GetDomainByHostname(ctx context.Context, hostname string
 	}
 	return d, nil
 }
+func (r *CDNRepository) GetDomainByHostnameAndBucketId(ctx context.Context, hostname string, bucketId string) (*cdn.Domain, error) {
+	q := `SELECT ` + domainColumns + `
+		FROM cdn_domains
+		WHERE hostname = $1 AND bucket_id = $2 AND status = 'active'
+		LIMIT 1`
+	d, err := scanDomain(r.db.QueryRow(ctx, q, hostname, bucketId))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, cdn.ErrDomainNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("CDNRepository.GetDomainByHostnameAndBucketId: %w", err)
+	}
+	return d, nil
+}
 
 func (r *CDNRepository) DeleteDomain(ctx context.Context, id uuid.UUID) error {
 	const q = `DELETE FROM cdn_domains WHERE id = $1`

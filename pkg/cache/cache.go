@@ -75,7 +75,9 @@ func FileKey(fileID string) string { return "file:" + fileID }
 func BucketKey(bucketID string) string { return "bucket:" + bucketID }
 
 // DomainKey returns the cache key for a CDN domain record.
-func DomainKey(hostname string) string { return "domain:" + hostname }
+func DomainKey(hostname string, bucketName string) string {
+	return "domain:" + bucketName + ":" + hostname
+}
 
 // FileListKey returns the cache key for a paginated file list within a bucket.
 func FileListKey(bucketID string, limit, offset int) string {

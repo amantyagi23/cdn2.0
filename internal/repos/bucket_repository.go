@@ -87,6 +87,17 @@ func (r *BucketRepository) GetByID(ctx context.Context, id uuid.UUID) (*bucket.B
 	}
 	return b, nil
 }
+func (r *BucketRepository) GetByName(ctx context.Context, name string) (*bucket.Bucket, error) {
+	q := `SELECT ` + bucketColumns + ` FROM storage_buckets WHERE name=$1 AND deleted_at IS NULL LIMIT 1`
+	b, err := scanBucket(r.db.QueryRow(ctx, q, name))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, bucket.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("BucketRepository.GetByName: %w", err)
+	}
+	return b, nil
+}
 
 func (r *BucketRepository) ListByAPIKey(ctx context.Context, apiKeyID uuid.UUID) ([]*bucket.Bucket, error) {
 	q := `SELECT ` + bucketColumns + `

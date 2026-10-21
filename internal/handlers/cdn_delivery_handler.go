@@ -51,7 +51,7 @@ func NewCDNDeliveryHandler(uc usecase.CDNDeliveryUsecase, log *zap.Logger, opts 
 
 // RegisterRoutes mounts the delivery endpoint.
 func (h *CDNDeliveryHandler) RegisterRoutes(router fiber.Router) {
-	router.Get("/cdn/*", h.Serve)
+	router.Get("/*", h.Serve)
 }
 
 func (h *CDNDeliveryHandler) Serve(c *fiber.Ctx) error {
@@ -60,11 +60,14 @@ func (h *CDNDeliveryHandler) Serve(c *fiber.Ctx) error {
 		return response.BadRequest(c, "BAD_HOST", "could not determine request host")
 	}
 
-	objectKey := strings.TrimPrefix(c.Params("*"), "/")
-	if objectKey == "" {
+	objectURL := strings.TrimPrefix(c.Params("*"), "/")
+
+	if objectURL == "" {
 		return response.BadRequest(c, "MISSING_KEY", "object key is required")
 	}
 
+	bucketName, objectKey, err := extractBucketName(objectURL)
+	fmt.Println(bucketName, objectKey)
 	// Localhost / bare-IP requests: either route to a configured fallback
 	// domain or let normal lookup handle it (usually 404).
 	lookupHost := hostname
@@ -72,7 +75,7 @@ func (h *CDNDeliveryHandler) Serve(c *fiber.Ctx) error {
 		lookupHost = h.localDomain
 	}
 
-	domain, err := h.uc.Resolve(c.Context(), lookupHost)
+	domain, err := h.uc.Resolve(c.Context(), lookupHost, bucketName)
 	if err != nil {
 		if !errors.Is(err, cdn.ErrDomainNotFound) {
 			h.log.Warn("CDNDelivery: resolve error",
@@ -90,7 +93,7 @@ func (h *CDNDeliveryHandler) Serve(c *fiber.Ctx) error {
 	// situation where headers (status, Content-Type, Cache-Control) are
 	// written after bytes have already been flushed.
 	var buf bytes.Buffer
-	fmt.Println(objectKey)
+
 	meta, err := h.uc.Stream(c.Context(), domain, objectKey, &buf)
 	if err != nil {
 		h.log.Warn("CDNDelivery: stream error",
@@ -185,4 +188,17 @@ func isLocalOrIP(host string) bool {
 	}
 	_, err := netip.ParseAddr(host)
 	return err == nil
+}
+
+func extractBucketName(objectPath string) (string, string, error) {
+	// Remove query parameters.
+	objectPath = strings.SplitN(objectPath, "?", 2)[0]
+	objectPath = strings.TrimLeft(objectPath, "/")
+
+	parts := strings.SplitN(objectPath, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid object path")
+	}
+
+	return parts[0], parts[0] + "/" + parts[1], nil
 }

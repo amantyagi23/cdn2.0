@@ -98,31 +98,59 @@ func NewFileUsecase(
 // a UUID prefix guarantees uniqueness and prevents collisions.  All
 // path-traversal sequences and unsafe characters are stripped so the
 // resulting key is safe to use as a storage path component.
-func objectKey(original string) string {
+func objectKey(bucketName, original string) string {
 	now := time.Now().UTC()
-	// Take only the base name — discards any directory component the
-	// client may have supplied (e.g. "../../etc/passwd").
+
+	// Normalize and validate the bucket name.
+	bucket := strings.ToLower(strings.TrimSpace(bucketName))
+	bucket = strings.ReplaceAll(bucket, " ", "-")
+
+	var bucketBuilder strings.Builder
+	for _, r := range bucket {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= '0' && r <= '9') ||
+			r == '-' || r == '_' {
+			bucketBuilder.WriteRune(r)
+		}
+	}
+
+	bucket = bucketBuilder.String()
+	if bucket == "" {
+		bucket = "default"
+	}
+
+	// Sanitize the original filename.
 	base := filepath.Base(strings.TrimSpace(original))
-	if base == "." || base == ".." || base == "/" {
+	if base == "." || base == ".." || base == "/" || base == "" {
 		base = "file"
 	}
-	// Lower-case and replace spaces with hyphens for readability.
+
 	base = strings.ReplaceAll(strings.ToLower(base), " ", "-")
-	// Keep only safe URL/filesystem characters: alphanumeric, hyphen,
-	// underscore, and a single dot for the extension.
+
 	var sb strings.Builder
 	for _, r := range base {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.' {
 			sb.WriteRune(r)
 		} else {
 			sb.WriteRune('-')
 		}
 	}
-	safe := sb.String()
-	if safe == "" || safe == "." {
+
+	safe := strings.Trim(sb.String(), ".-")
+	if safe == "" {
 		safe = "file"
 	}
-	return fmt.Sprintf("%04d/%02d/%s-%s", now.Year(), int(now.Month()), uuid.NewString(), safe)
+
+	return fmt.Sprintf(
+		"%s/%04d/%02d/%s-%s",
+		bucket,
+		now.Year(),
+		int(now.Month()),
+		uuid.NewString(),
+		safe,
+	)
 }
 
 func (uc *fileUsecase) RegisterFile(ctx context.Context, in RegisterFileInput) (*file.FileResponse, error) {
@@ -131,7 +159,7 @@ func (uc *fileUsecase) RegisterFile(ctx context.Context, in RegisterFileInput) (
 		return nil, err
 	}
 
-	key := objectKey(in.OriginalFilename)
+	key := objectKey(b.Name, in.OriginalFilename)
 	f, err := file.NewFile(in.BucketID, key, in.OriginalFilename, in.ContentType, in.SizeBytes, b.MaxFileSizeBytes)
 	if err != nil {
 		return nil, err
@@ -207,7 +235,7 @@ func (uc *fileUsecase) RequestUploadURL(ctx context.Context, in RegisterFileInpu
 		return nil, err
 	}
 
-	key := objectKey(in.OriginalFilename)
+	key := objectKey(b.Name, in.OriginalFilename)
 	f, err := file.NewFile(in.BucketID, key, in.OriginalFilename, in.ContentType, in.SizeBytes, b.MaxFileSizeBytes)
 	if err != nil {
 		return nil, err
@@ -278,7 +306,7 @@ func (uc *fileUsecase) UploadFile(ctx context.Context, in UploadFileInput) (*fil
 		return nil, err
 	}
 
-	key := objectKey(in.OriginalFilename)
+	key := objectKey(b.Name, in.OriginalFilename)
 	f, err := file.NewFile(in.BucketID, key, in.OriginalFilename, in.ContentType, in.SizeBytes, b.MaxFileSizeBytes)
 	if err != nil {
 		return nil, err
@@ -353,7 +381,10 @@ func (uc *fileUsecase) MarkFileDeleted(ctx context.Context, fileID uuid.UUID) er
 //
 //   - Public bucket  → permanent CDN delivery URL: <publicBaseURL>/cdn/<objectKey>
 //   - Private bucket → presigned MinIO GET URL valid for 15 minutes
-func (uc *fileUsecase) GetFileURL(ctx context.Context, fileID uuid.UUID) (*FileURLResponse, error) {
+func (uc *fileUsecase) GetFileURL(
+	ctx context.Context,
+	fileID uuid.UUID,
+) (*FileURLResponse, error) {
 	f, err := uc.GetFile(ctx, fileID)
 	if err != nil {
 		return nil, err
@@ -365,16 +396,31 @@ func (uc *fileUsecase) GetFileURL(ctx context.Context, fileID uuid.UUID) (*FileU
 	}
 
 	if b.Visibility == bucket.VisibilityPublic {
-		url := uc.publicBaseURL + "/cdn/" + f.ObjectKey
+		baseURL := strings.TrimRight(uc.publicBaseURL, "/")
+		objectKey := strings.TrimLeft(f.ObjectKey, "/")
+
+		url := baseURL + "/" + objectKey
+
 		return &FileURLResponse{URL: url}, nil
 	}
 
-	// Private: generate a presigned GET URL.
 	const expiry = 15 * time.Minute
-	presignURL, err := uc.storage.PresignedGetObject(ctx, b.StorageName, f.ObjectKey, expiry, nil)
+
+	presignURL, err := uc.storage.PresignedGetObject(
+		ctx,
+		b.StorageName,
+		f.ObjectKey,
+		expiry,
+		nil,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("GetFileURL: presign: %w", err)
 	}
+
 	secs := int(expiry.Seconds())
-	return &FileURLResponse{URL: presignURL.String(), ExpiresIn: &secs}, nil
+
+	return &FileURLResponse{
+		URL:       presignURL.String(),
+		ExpiresIn: &secs,
+	}, nil
 }

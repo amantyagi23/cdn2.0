@@ -37,7 +37,7 @@ type BucketUsecase interface {
 
 type bucketUsecase struct {
 	bucketRepo *repos.BucketRepository
-	Storage    *storage.StorageClient
+	storage    *storage.StorageClient
 	log        *zap.Logger
 }
 
@@ -46,7 +46,7 @@ func NewBucketUsecase(
 	storage *storage.StorageClient,
 	log *zap.Logger,
 ) BucketUsecase {
-	return &bucketUsecase{bucketRepo: bucketRepo, Storage: storage, log: log}
+	return &bucketUsecase{bucketRepo: bucketRepo, storage: storage, log: log}
 }
 
 // storageBucketName derives a globally-unique, filesystem-safe storage name.
@@ -71,11 +71,11 @@ func (uc *bucketUsecase) CreateBucket(ctx context.Context, in CreateBucketInput)
 	}
 
 	// Provision storage bucket before writing DB record.
-	if err := uc.Storage.EnsureBucket(ctx, b.StorageName, ""); err != nil {
+	if err := uc.storage.EnsureBucket(ctx, b.StorageName, ""); err != nil {
 		return nil, fmt.Errorf("CreateBucket: provision storage bucket: %w", err)
 	}
 	if vis == bucket.VisibilityPublic {
-		if err := uc.Storage.SetPublicRead(ctx, b.StorageName); err != nil {
+		if err := uc.storage.SetPublicRead(ctx, b.StorageName); err != nil {
 			return nil, fmt.Errorf("CreateBucket: set public policy: %w", err)
 		}
 	}
@@ -114,11 +114,11 @@ func (uc *bucketUsecase) UpdateBucket(ctx context.Context, in UpdateBucketInput)
 			return nil, err
 		}
 		if vis == bucket.VisibilityPublic {
-			if err := uc.Storage.SetPublicRead(ctx, b.StorageName); err != nil {
+			if err := uc.storage.SetPublicRead(ctx, b.StorageName); err != nil {
 				return nil, fmt.Errorf("UpdateBucket: set public policy: %w", err)
 			}
 		} else {
-			if err := uc.Storage.SetPrivate(ctx, b.StorageName); err != nil {
+			if err := uc.storage.SetPrivate(ctx, b.StorageName); err != nil {
 				return nil, fmt.Errorf("UpdateBucket: set private policy: %w", err)
 			}
 		}

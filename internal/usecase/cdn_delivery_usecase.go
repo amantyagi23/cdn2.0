@@ -23,7 +23,7 @@ type DeliveryMeta struct {
 // CDNDeliveryUsecase resolves a hostname + object key to a MinIO stream.
 type CDNDeliveryUsecase interface {
 	// Resolve maps a hostname to the underlying bucket settings.
-	Resolve(ctx context.Context, hostname string) (*cdn.Domain, error)
+	Resolve(ctx context.Context, hostname string, bucketName string) (*cdn.Domain, error)
 	// Stream writes the object identified by (domain, objectKey) into w.
 	Stream(ctx context.Context, domain *cdn.Domain, objectKey string, w io.Writer) (DeliveryMeta, error)
 }
@@ -52,14 +52,20 @@ func NewCDNDeliveryUsecase(
 	}
 }
 
-func (uc *cdnDeliveryUsecase) Resolve(ctx context.Context, hostname string) (*cdn.Domain, error) {
-	cacheKey := cache.DomainKey(hostname)
+func (uc *cdnDeliveryUsecase) Resolve(ctx context.Context, hostname string, bucketName string) (*cdn.Domain, error) {
+
+	cacheKey := cache.DomainKey(hostname, bucketName)
 
 	if cached, err := cache.Get[cdn.Domain](ctx, uc.cache, cacheKey); err == nil {
 		return &cached, nil
 	}
 
-	d, err := uc.cdnRepo.GetDomainByHostname(ctx, hostname)
+	b, err := uc.bucketRepo.GetByName(ctx, bucketName)
+	if err != nil {
+		return nil, err
+	}
+
+	d, err := uc.cdnRepo.GetDomainByHostnameAndBucketId(ctx, hostname, b.ID.String())
 	if err != nil {
 		return nil, err
 	}
