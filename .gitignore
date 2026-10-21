@@ -25,6 +25,10 @@ go.work.sum
 !.env.example
 !.env.sample
 
+
+# Documents
+
+document
 # Logs
 *.log
 logs/

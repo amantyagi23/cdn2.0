@@ -121,7 +121,7 @@ CREATE TABLE cdn_domains (
     id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     bucket_id          UUID NOT NULL
         REFERENCES storage_buckets (id) ON DELETE CASCADE,
-    hostname           VARCHAR(253) NOT NULL UNIQUE,
+    hostname           VARCHAR(253) NOT NULL,
     status             cdn_domain_status NOT NULL DEFAULT 'pending',
     verification_token TEXT NOT NULL,
     verified_at        TIMESTAMPTZ,

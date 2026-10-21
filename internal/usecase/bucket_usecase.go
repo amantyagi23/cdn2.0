@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/amantyagi23/cdn-network/internal/domain/bucket"
-	"github.com/amantyagi23/cdn-network/internal/infrastructure/minio"
+	"github.com/amantyagi23/cdn-network/internal/infrastructure/storage"
 	"github.com/amantyagi23/cdn-network/internal/repos"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -37,20 +37,20 @@ type BucketUsecase interface {
 
 type bucketUsecase struct {
 	bucketRepo *repos.BucketRepository
-	minio      *minio.MinIOClient
+	Storage    *storage.StorageClient
 	log        *zap.Logger
 }
 
 func NewBucketUsecase(
 	bucketRepo *repos.BucketRepository,
-	minioClient *minio.MinIOClient,
+	storage *storage.StorageClient,
 	log *zap.Logger,
 ) BucketUsecase {
-	return &bucketUsecase{bucketRepo: bucketRepo, minio: minioClient, log: log}
+	return &bucketUsecase{bucketRepo: bucketRepo, Storage: storage, log: log}
 }
 
-// minioBucketName derives a globally-unique, MinIO-safe name.
-func minioBucketName(apiKeyID uuid.UUID, name string) string {
+// storageBucketName derives a globally-unique, filesystem-safe storage name.
+func storageBucketName(apiKeyID uuid.UUID, name string) string {
 	h := sha256.Sum256([]byte(apiKeyID.String() + "|" + name + "|" + uuid.NewString()))
 	return "b-" + hex.EncodeToString(h[:])[:20]
 }
@@ -64,18 +64,18 @@ func (uc *bucketUsecase) CreateBucket(ctx context.Context, in CreateBucketInput)
 		in.MaxFileSizeBytes = 52428800 // 50 MiB default
 	}
 
-	minioName := minioBucketName(in.APIKeyID, strings.ToLower(strings.TrimSpace(in.Name)))
-	b, err := bucket.NewBucket(in.APIKeyID, in.Name, minioName, vis, in.MaxFileSizeBytes)
+	storageName := storageBucketName(in.APIKeyID, strings.ToLower(strings.TrimSpace(in.Name)))
+	b, err := bucket.NewBucket(in.APIKeyID, in.Name, storageName, vis, in.MaxFileSizeBytes)
 	if err != nil {
 		return nil, err
 	}
 
-	// Provision MinIO bucket before writing DB record.
-	if err := uc.minio.EnsureBucket(ctx, b.MinioBucketName, ""); err != nil {
-		return nil, fmt.Errorf("CreateBucket: provision minio bucket: %w", err)
+	// Provision storage bucket before writing DB record.
+	if err := uc.Storage.EnsureBucket(ctx, b.StorageName, ""); err != nil {
+		return nil, fmt.Errorf("CreateBucket: provision storage bucket: %w", err)
 	}
 	if vis == bucket.VisibilityPublic {
-		if err := uc.minio.SetPublicRead(ctx, b.MinioBucketName); err != nil {
+		if err := uc.Storage.SetPublicRead(ctx, b.StorageName); err != nil {
 			return nil, fmt.Errorf("CreateBucket: set public policy: %w", err)
 		}
 	}
@@ -114,11 +114,11 @@ func (uc *bucketUsecase) UpdateBucket(ctx context.Context, in UpdateBucketInput)
 			return nil, err
 		}
 		if vis == bucket.VisibilityPublic {
-			if err := uc.minio.SetPublicRead(ctx, b.MinioBucketName); err != nil {
+			if err := uc.Storage.SetPublicRead(ctx, b.StorageName); err != nil {
 				return nil, fmt.Errorf("UpdateBucket: set public policy: %w", err)
 			}
 		} else {
-			if err := uc.minio.SetPrivate(ctx, b.MinioBucketName); err != nil {
+			if err := uc.Storage.SetPrivate(ctx, b.StorageName); err != nil {
 				return nil, fmt.Errorf("UpdateBucket: set private policy: %w", err)
 			}
 		}

@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"time"
 
-	minioclient "github.com/amantyagi23/cdn-network/internal/infrastructure/minio"
 	natsclient "github.com/amantyagi23/cdn-network/internal/infrastructure/nats"
+	storageClient "github.com/amantyagi23/cdn-network/internal/infrastructure/storage"
 	"github.com/amantyagi23/cdn-network/internal/repos"
 	"github.com/google/uuid"
 	natsgo "github.com/nats-io/nats.go"
@@ -37,7 +37,7 @@ type FileDeleteMsg struct {
 // FileCleanupWorker consumes file.delete events and purges MinIO objects.
 type FileCleanupWorker struct {
 	nats       *natsclient.NATSClient
-	minio      *minioclient.MinIOClient
+	storage    *storageClient.StorageClient
 	fileRepo   *repos.FileRepository
 	bucketRepo *repos.BucketRepository
 	log        *zap.Logger
@@ -46,14 +46,14 @@ type FileCleanupWorker struct {
 
 func NewFileCleanupWorker(
 	nats *natsclient.NATSClient,
-	minio *minioclient.MinIOClient,
+	storage *storageClient.StorageClient,
 	fileRepo *repos.FileRepository,
 	bucketRepo *repos.BucketRepository,
 	log *zap.Logger,
 ) *FileCleanupWorker {
 	return &FileCleanupWorker{
 		nats:       nats,
-		minio:      minio,
+		storage:    storage,
 		fileRepo:   fileRepo,
 		bucketRepo: bucketRepo,
 		log:        log,
@@ -119,10 +119,10 @@ func (w *FileCleanupWorker) handle(ctx context.Context, msg *natsgo.Msg) error {
 		return fmt.Errorf("bucketRepo.GetByID(%s): %w", f.BucketID, err)
 	}
 
-	// Remove from MinIO using the real bucket name.
-	if err := w.minio.RemoveObject(ctx, b.MinioBucketName, f.ObjectKey); err != nil {
-		if !minioclient.IsNotFound(err) {
-			return fmt.Errorf("RemoveObject(%s/%s): %w", b.MinioBucketName, f.ObjectKey, err)
+	// Remove object from storage using the real bucket name.
+	if err := w.storage.RemoveObject(ctx, b.StorageName, f.ObjectKey); err != nil {
+		if !storageClient.IsNotFound(err) {
+			return fmt.Errorf("RemoveObject(%s/%s): %w", b.StorageName, f.ObjectKey, err)
 		}
 		// Already gone — proceed to mark DB record deleted.
 	}

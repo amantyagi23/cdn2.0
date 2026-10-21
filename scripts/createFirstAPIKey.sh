@@ -2,15 +2,22 @@
 # =============================================================================
 # createFirstAPIKey.sh
 #
-# Bootstrap script: creates your first API key via the CDN API, then prints
-# a ready-to-paste curl cheat-sheet covering every available endpoint.
+# Bootstrap script: creates your first API key by inserting directly into
+# PostgreSQL (bypassing the HTTP API), then prints a ready-to-paste curl
+# cheat-sheet covering every available endpoint.
+#
+# Key format (must match apikey.NewAPIKey / generateRawKey in Go):
+#   raw    = "ak_" + base64.RawURLEncoding(32 random bytes)   -> 46 chars
+#   prefix = raw[:12]
+#   hash   = hex(sha256(raw))                                 -> 64 chars
+# Only the hash + prefix are stored; the raw key is printed once.
 #
 # Usage:
 #   ./scripts/createFirstAPIKey.sh [--name NAME] [--host HOST]
 #
 # Optional flags:
 #   --name NAME   Human-readable label for the API key (default: "bootstrap")
-#   --host HOST   API base URL, no trailing slash
+#   --host HOST   API base URL used in the cheat-sheet, no trailing slash
 #                 (default: reads API_PREFIX & APP_PORT from .env, else
 #                  falls back to http://localhost:4500/api/v1)
 #   -h, --help    Show this help
@@ -32,6 +39,12 @@ APP_PORT="${APP_PORT:-4500}"
 API_PREFIX="${API_PREFIX:-/api/v1}"
 DEFAULT_HOST="http://localhost:${APP_PORT}${API_PREFIX}"
 
+PG_HOST="${POSTGRES_HOST:-localhost}"
+PG_PORT="${POSTGRES_PORT:-5432}"
+PG_USER="${POSTGRES_USER:-aman}"
+PG_PASSWORD="${POSTGRES_PASSWORD:-12345678}"
+DB_NAME="${POSTGRES_DB:-tomatotrails}"
+
 KEY_NAME="bootstrap"
 BASE_URL="$DEFAULT_HOST"
 
@@ -51,46 +64,85 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Dependency check ──────────────────────────────────────────────────────────
-for dep in curl jq; do
+for dep in psql openssl; do
     if ! command -v "$dep" >/dev/null 2>&1; then
         echo "❌ Required tool not found: $dep"
         exit 1
     fi
 done
 
-# ── Create the API key ────────────────────────────────────────────────────────
+# ── PostgreSQL connection settings ────────────────────────────────────────────
+export PGPASSWORD="$PG_PASSWORD"
+trap 'unset PGPASSWORD' EXIT
+
+PSQL=(psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$DB_NAME" \
+      -v ON_ERROR_STOP=1)
+
 echo ""
 echo "=========================================="
 echo "🚀  Creating API key '${KEY_NAME}'"
-echo "    ${BASE_URL}/api-keys"
+echo "    ${PG_USER}@${PG_HOST}:${PG_PORT}/${DB_NAME}"
 echo "=========================================="
 echo ""
 
-RESPONSE=$(curl -sf -X POST "${BASE_URL}/api-keys" \
-    -H "Content-Type: application/json" \
-    -d "{\"name\": \"${KEY_NAME}\"}" \
+# ── Sanity checks ─────────────────────────────────────────────────────────────
+if ! "${PSQL[@]}" -tAc "SELECT 1;" >/dev/null 2>&1; then
+    echo "❌  Could not connect to PostgreSQL at ${PG_HOST}:${PG_PORT}/${DB_NAME}."
+    echo "    Check POSTGRES_* in .env and that the database exists."
+    exit 1
+fi
+
+if ! "${PSQL[@]}" -tAc "SELECT 1 FROM api_keys LIMIT 1;" >/dev/null 2>&1; then
+    echo "❌  Table 'api_keys' not found in '${DB_NAME}'."
+    echo "    Apply the schema first."
+    exit 1
+fi
+
+# ── Generate the raw API key exactly like apikey.generateRawKey() ────────────
+# Go: base64.RawURLEncoding (URL-safe, no padding) of 32 random bytes.
+#     rawKeyPrefix = "ak_", displayLen = 12.
+RAW_B64="$(openssl rand -base64 32 | tr -d '\n')"
+RAW_URLSAFE="$(printf '%s' "$RAW_B64" | tr '+/' '-_' | tr -d '=')"
+RAW_KEY="ak_${RAW_URLSAFE}"
+KEY_PREFIX="${RAW_KEY:0:12}"
+KEY_HASH="$(printf '%s' "$RAW_KEY" | openssl dgst -sha256 -hex | awk '{print $NF}')"
+
+# Format assertions (fail fast if the platform's openssl/tr behaves oddly).
+if [[ "${#RAW_KEY}" -ne 46 ]]; then
+    echo "❌  Raw key has unexpected length ${#RAW_KEY} (want 46): $RAW_KEY"
+    exit 1
+fi
+if [[ "${#KEY_HASH}" -ne 64 || ! "$KEY_HASH" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "❌  Hash has unexpected format: $KEY_HASH"
+    exit 1
+fi
+
+# ── Insert into api_keys ─────────────────────────────────────────────────────
+KEY_ID=$("${PSQL[@]}" -tA \
+    -v name="$KEY_NAME" \
+    -v prefix="$KEY_PREFIX" \
+    -v hash="$KEY_HASH" <<'SQL'
+INSERT INTO api_keys (name, key_prefix, key_hash, scopes, status)
+VALUES (:'name', :'prefix', :'hash', '{}'::text[], 'active')
+RETURNING id;
+SQL
 ) || {
-    echo "❌  Request failed. Is the server running at ${BASE_URL}?"
-    echo "   Start it with:  go run ./cmd/server"
+    echo "❌  Failed to insert API key into the database."
     exit 1
 }
 
-# ── Parse response ────────────────────────────────────────────────────────────
-# The API wraps responses in { "data": { ... } }
-RAW_KEY=$(echo "$RESPONSE" | jq -r '.data.rawKey // .data.key // empty')
-KEY_ID=$(echo "$RESPONSE"  | jq -r '.data.id   // empty')
-
-if [[ -z "$RAW_KEY" ]]; then
-    echo "❌  Could not extract rawKey from response:"
-    echo "$RESPONSE" | jq .
+KEY_ID="$(printf '%s' "$KEY_ID" | tr -d '[:space:]')"
+if [[ -z "$KEY_ID" ]]; then
+    echo "❌  Insert returned no id."
     exit 1
 fi
 
 # ── Print summary ─────────────────────────────────────────────────────────────
 echo "✅  API key created!"
 echo ""
-echo "  ID  : ${KEY_ID}"
-echo "  KEY : ${RAW_KEY}"
+echo "  ID     : ${KEY_ID}"
+echo "  PREFIX : ${KEY_PREFIX}"
+echo "  KEY    : ${RAW_KEY}"
 echo ""
 echo "⚠️   Copy the key now — it will NOT be shown again."
 echo ""

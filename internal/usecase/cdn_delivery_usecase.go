@@ -6,7 +6,7 @@ import (
 	"io"
 
 	"github.com/amantyagi23/cdn-network/internal/domain/cdn"
-	minioclient "github.com/amantyagi23/cdn-network/internal/infrastructure/minio"
+	"github.com/amantyagi23/cdn-network/internal/infrastructure/storage"
 	"github.com/amantyagi23/cdn-network/internal/repos"
 	"github.com/amantyagi23/cdn-network/pkg/cache"
 	"go.uber.org/zap"
@@ -31,7 +31,7 @@ type CDNDeliveryUsecase interface {
 type cdnDeliveryUsecase struct {
 	cdnRepo    *repos.CDNRepository
 	bucketRepo *repos.BucketRepository
-	minio      *minioclient.MinIOClient
+	storage    *storage.StorageClient
 	cache      cache.Store
 	log        *zap.Logger
 }
@@ -39,14 +39,14 @@ type cdnDeliveryUsecase struct {
 func NewCDNDeliveryUsecase(
 	cdnRepo *repos.CDNRepository,
 	bucketRepo *repos.BucketRepository,
-	minio *minioclient.MinIOClient,
+	storage *storage.StorageClient,
 	redisCache cache.Store,
 	log *zap.Logger,
 ) CDNDeliveryUsecase {
 	return &cdnDeliveryUsecase{
 		cdnRepo:    cdnRepo,
 		bucketRepo: bucketRepo,
-		minio:      minio,
+		storage:    storage,
 		cache:      redisCache,
 		log:        log,
 	}
@@ -76,9 +76,9 @@ func (uc *cdnDeliveryUsecase) Stream(ctx context.Context, domain *cdn.Domain, ob
 		return DeliveryMeta{}, fmt.Errorf("CDNDelivery.Stream: bucket lookup: %w", err)
 	}
 
-	info, err := uc.minio.DownloadTo(ctx, b.MinioBucketName, objectKey, w)
+	info, err := uc.storage.DownloadTo(ctx, b.StorageName, objectKey, w)
 	if err != nil {
-		if minioclient.IsNotFound(err) {
+		if storage.IsNotFound(err) {
 			return DeliveryMeta{}, cdn.ErrDomainNotFound // reuse sentinel for 404
 		}
 		return DeliveryMeta{}, fmt.Errorf("CDNDelivery.Stream: %w", err)
@@ -89,8 +89,8 @@ func (uc *cdnDeliveryUsecase) Stream(ctx context.Context, domain *cdn.Domain, ob
 		ETag:        info.ETag,
 		SizeBytes:   info.Size,
 	}
-	if cc := info.Metadata.Get("Cache-Control"); cc != "" {
-		meta.CacheControl = cc
-	}
+	// if cc := info.Metadata.Get("Cache-Control"); cc != "" {
+	// 	meta.CacheControl = cc
+	// }
 	return meta, nil
 }

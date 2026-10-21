@@ -25,9 +25,9 @@ import (
 type Kind string
 
 const (
-	KindBet       Kind = "bet"
-	KindMessage   Kind = "message"
-	KindWebsocket Kind = "websocket"
+	KindAPI      Kind = "api"
+	KindUpload   Kind = "upload"
+	KindDelivery Kind = "delivery"
 )
 
 // Config is the per-kind policy.
@@ -45,9 +45,9 @@ type Config struct {
 // DefaultConfig returns the built-in defaults. Overridable from env.
 func DefaultConfig() map[Kind]Config {
 	return map[Kind]Config{
-		KindBet:       {WindowMs: 1_000, MaxRequests: 10, PenaltyViolations: 5, PenaltyWindowMs: 5 * 60 * 1000},
-		KindMessage:   {WindowMs: 1_000, MaxRequests: 5, PenaltyViolations: 5, PenaltyWindowMs: 5 * 60 * 1000},
-		KindWebsocket: {WindowMs: 1_000, MaxRequests: 25, PenaltyViolations: 5, PenaltyWindowMs: 5 * 60 * 1000},
+		KindAPI:      {WindowMs: 1_000, MaxRequests: 10, PenaltyViolations: 5, PenaltyWindowMs: 5 * 60 * 1000},
+		KindUpload:   {WindowMs: 1_000, MaxRequests: 5, PenaltyViolations: 5, PenaltyWindowMs: 5 * 60 * 1000},
+		KindDelivery: {WindowMs: 1_000, MaxRequests: 25, PenaltyViolations: 5, PenaltyWindowMs: 5 * 60 * 1000},
 	}
 }
 

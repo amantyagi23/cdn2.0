@@ -29,7 +29,7 @@ func (r *BucketRepository) Create(ctx context.Context, b *bucket.Bucket) error {
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 	`
 	_, err := r.db.Exec(ctx, q,
-		b.ID, b.APIKeyID, b.Name, b.MinioBucketName,
+		b.ID, b.APIKeyID, b.Name, b.StorageName,
 		string(b.Visibility), b.MaxFileSizeBytes, b.CreatedAt, b.UpdatedAt,
 	)
 	if err != nil {
@@ -67,7 +67,7 @@ func scanBucket(row pgx.Row) (*bucket.Bucket, error) {
 	var b bucket.Bucket
 	var vis string
 	if err := row.Scan(
-		&b.ID, &b.APIKeyID, &b.Name, &b.MinioBucketName, &vis,
+		&b.ID, &b.APIKeyID, &b.Name, &b.StorageName, &vis,
 		&b.MaxFileSizeBytes, &b.CreatedAt, &b.UpdatedAt, &b.DeletedAt,
 	); err != nil {
 		return nil, err

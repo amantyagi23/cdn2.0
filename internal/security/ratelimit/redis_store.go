@@ -119,7 +119,7 @@ func (s *RedisStore) Reset(ctx context.Context, kind Kind, id string) error {
 	}
 	// Reset across kinds — scan and delete. Not atomic but acceptable
 	// for an admin operation.
-	for _, k := range []Kind{KindBet, KindMessage, KindWebsocket} {
+	for _, k := range []Kind{KindAPI, KindUpload, KindDelivery} {
 		_ = s.Reset(ctx, k, id)
 	}
 	return nil

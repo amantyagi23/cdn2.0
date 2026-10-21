@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -12,15 +13,14 @@ import (
 	"github.com/amantyagi23/cdn-network/internal/health"
 	"github.com/amantyagi23/cdn-network/internal/infrastructure/database"
 	"github.com/amantyagi23/cdn-network/internal/infrastructure/logger"
-	"github.com/amantyagi23/cdn-network/internal/infrastructure/minio"
 	"github.com/amantyagi23/cdn-network/internal/infrastructure/nats"
 	"github.com/amantyagi23/cdn-network/internal/infrastructure/redis"
+	"github.com/amantyagi23/cdn-network/internal/infrastructure/storage"
 	"github.com/amantyagi23/cdn-network/internal/routes"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/cors"
-	fiberlogger "github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/joho/godotenv"
@@ -73,8 +73,8 @@ func main() {
 		if cfg.PSQLUser == "" || cfg.PSQLPassword == "" || cfg.PSQLDatabase == "" {
 			log.Fatal("PostgreSQL credentials are required in production")
 		}
-		if cfg.MinIOAccessKey == "" || cfg.MinIOSecretKey == "" {
-			log.Fatal("MinIO credentials are required in production")
+		if cfg.StoragePublicBaseURL == "" || cfg.StorageSigningSecret == "" {
+			log.Fatal("Storage credentials are required in production")
 		}
 	}
 
@@ -140,28 +140,54 @@ func main() {
 	}
 	defer natsClient.Close()
 
-	minioClient, err := minio.NewClient(minio.Config{
-		Endpoint:  cfg.MinIOEndpoint,  // "minio:9000" in compose, "localhost:9000" locally
-		AccessKey: cfg.MinIOAccessKey, // fall back to MINIO_ROOT_USER in dev
-		SecretKey: cfg.MinIOSecretKey, // fall back to MINIO_ROOT_PASSWORD in dev
-		UseSSL:    cfg.MinIOUseSSL,    // false in compose
-		Region:    cfg.MinIORegion,    // "" (let server decide) or "us-east-1"
+	storageClient, err := storage.NewClient(storage.Config{
+		BasePath:      "document", // auto-created if missing
+		SigningSecret: cfg.StorageSigningSecret,
+		PublicBaseURL: cfg.StoragePublicBaseURL, // e.g. "https://cdn.example.com/files"
 	}, log)
 	if err != nil {
-		log.Fatal("minio init failed", zap.Error(err))
+		log.Fatal("storage init failed", zap.Error(err))
 	}
-	defer minioClient.Close()
+	defer storageClient.Close()
 
 	// --------------------------------------------------
 	// Fiber
 	// --------------------------------------------------
 
+	// trustedProxies is the list of upstream proxy CIDRs/IPs that are
+	// allowed to set X-Forwarded-* and X-Real-IP headers.  Override via
+	// TRUSTED_PROXIES (comma-separated).  An empty value means no proxy
+	// is trusted and Fiber will use the direct peer address.
+	var trustedProxies []string
+	if raw := os.Getenv("TRUSTED_PROXIES"); raw != "" {
+		for _, p := range strings.Split(raw, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				trustedProxies = append(trustedProxies, p)
+			}
+		}
+	}
+
 	app := fiber.New(fiber.Config{
-		AppName:               cfg.AppName,
-		ReadTimeout:           10 * time.Second,
-		WriteTimeout:          10 * time.Second,
-		IdleTimeout:           30 * time.Second,
-		DisableStartupMessage: false,
+		AppName:      cfg.AppName,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+		// 10 MiB global body limit; individual upload routes enforce their own.
+		BodyLimit:             10 * 1024 * 1024,
+		DisableStartupMessage: true,
+
+		// Trusted proxy configuration.  When trustedProxies is empty Fiber
+		// treats every connection as direct and never reads X-Forwarded-* or
+		// X-Real-IP.
+		EnableTrustedProxyCheck: len(trustedProxies) > 0,
+		TrustedProxies:          trustedProxies,
+		// Only read X-Forwarded-For when a trusted proxy list is configured.
+		ProxyHeader: func() string {
+			if len(trustedProxies) > 0 {
+				return fiber.HeaderXForwardedFor
+			}
+			return ""
+		}(),
 
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
 			log.Error(
@@ -170,16 +196,22 @@ func main() {
 			)
 
 			code := fiber.StatusInternalServerError
+			msg := "an unexpected error occurred"
 
 			if fiberErr, ok := err.(*fiber.Error); ok {
 				code = fiberErr.Code
+				// Only expose the message for client errors (4xx).
+				// Never leak internal detail for 5xx.
+				if code < 500 {
+					msg = fiberErr.Message
+				}
 			}
 
 			return c.Status(code).JSON(fiber.Map{
 				"success": false,
 				"error": fiber.Map{
 					"code":    "FIBER_ERROR",
-					"message": err.Error(),
+					"message": msg,
 				},
 			})
 		},
@@ -189,19 +221,37 @@ func main() {
 	// Middleware
 	// --------------------------------------------------
 
+	// Recovery must be first so it catches panics from all other middleware.
 	app.Use(recover.New(recover.Config{
+		// Stack traces go to the logger; never expose them in the response.
 		EnableStackTrace: true,
+		StackTraceHandler: func(c *fiber.Ctx, e interface{}) {
+			log.Error("panic recovered",
+				zap.String("method", c.Method()),
+				zap.String("path", c.Path()),
+				zap.Any("panic", e),
+			)
+		},
 	}))
-
-	app.Use(compress.New())
 
 	app.Use(requestid.New())
 
+	// Single structured logger — the redundant fiber fiberlogger has been removed.
 	app.Use(logger.Middleware(log))
+
+	// Security headers on every response.
+	app.Use(func(c *fiber.Ctx) error {
+		c.Set("X-Content-Type-Options", "nosniff")
+		c.Set("X-Frame-Options", "DENY")
+		c.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Set("X-Permitted-Cross-Domain-Policies", "none")
+		return c.Next()
+	})
 
 	// CORS: allowlist is read from CORS_ALLOWED_ORIGINS (comma-separated).
 	// Falls back to local dev origins when not in production.
 	corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
+	allowCredentials := false
 	if corsOrigins == "" {
 		if cfg.Production {
 			// No frontend origin configured in production — log a warning
@@ -212,17 +262,20 @@ func main() {
 			corsOrigins = "http://localhost:5173,http://localhost:3000,http://localhost:4500"
 		}
 	}
+	// AllowCredentials is only safe when origins are explicitly enumerated
+	// (not a wildcard).  Compute this after corsOrigins is finalised.
+	if corsOrigins != "" && corsOrigins != "*" {
+		allowCredentials = true
+	}
 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     corsOrigins,
 		AllowMethods:     "GET,POST,PUT,PATCH,DELETE,OPTIONS",
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
-		AllowCredentials: true,
+		AllowCredentials: allowCredentials,
 	}))
 
-	app.Use(fiberlogger.New(fiberlogger.Config{
-		Format: "[${time}] ${status} - ${method} ${path} | ${latency} | rid=${locals:requestid}\n",
-	}))
+	app.Use(compress.New())
 
 	// --------------------------------------------------
 	// Static files
@@ -256,7 +309,7 @@ func main() {
 		Nats:          natsClient,
 		DB:            psqlClient,
 		Logger:        log,
-		Minio:         minioClient,
+		Storage:       storageClient,
 		Ctx:           ctx,
 		Cancel:        cancel,
 	}, cfg)

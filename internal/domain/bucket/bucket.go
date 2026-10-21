@@ -10,13 +10,13 @@ import (
 )
 
 var (
-	ErrNotFound          = errors.New("bucket not found")
-	ErrBucketNameTaken   = errors.New("bucket name already in use for this API key")
-	ErrInvalidName       = errors.New("bucket name must be 3-63 chars, lowercase alphanumeric with hyphens")
-	ErrInvalidMinioName  = errors.New("invalid minio bucket name")
-	ErrInvalidMaxSize    = errors.New("max file size must be greater than zero")
-	ErrAPIKeyIDRequired  = errors.New("api key id is required")
-	ErrInvalidVisibility = errors.New("invalid bucket visibility")
+	ErrNotFound           = errors.New("bucket not found")
+	ErrBucketNameTaken    = errors.New("bucket name already in use for this API key")
+	ErrInvalidName        = errors.New("bucket name must be 3-63 chars, lowercase alphanumeric with hyphens")
+	ErrInvalidStorageName = errors.New("invalid storage bucket name")
+	ErrInvalidMaxSize     = errors.New("max file size must be greater than zero")
+	ErrAPIKeyIDRequired   = errors.New("api key id is required")
+	ErrInvalidVisibility  = errors.New("invalid bucket visibility")
 )
 
 var bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
@@ -44,7 +44,7 @@ type Bucket struct {
 	ID               uuid.UUID
 	APIKeyID         uuid.UUID
 	Name             string
-	MinioBucketName  string
+	StorageName      string
 	Visibility       Visibility
 	MaxFileSizeBytes int64
 	CreatedAt        time.Time
@@ -54,7 +54,7 @@ type Bucket struct {
 
 func NewBucket(
 	apiKeyID uuid.UUID,
-	name, minioName string,
+	name, storageName string,
 	visibility Visibility,
 	maxFileSize int64,
 ) (*Bucket, error) {
@@ -65,8 +65,8 @@ func NewBucket(
 		return nil, ErrAPIKeyIDRequired
 	case !bucketNamePattern.MatchString(name):
 		return nil, ErrInvalidName
-	case minioName == "":
-		return nil, ErrInvalidMinioName
+	case storageName == "":
+		return nil, ErrInvalidStorageName
 	case !visibility.IsValid():
 		return nil, ErrInvalidVisibility
 	case maxFileSize <= 0:
@@ -78,7 +78,7 @@ func NewBucket(
 		ID:               uuid.New(),
 		APIKeyID:         apiKeyID,
 		Name:             name,
-		MinioBucketName:  minioName,
+		StorageName:      storageName,
 		Visibility:       visibility,
 		MaxFileSizeBytes: maxFileSize,
 		CreatedAt:        now,
@@ -114,7 +114,6 @@ func (b *Bucket) MarkDeleted() {
 func (b *Bucket) Sanitized() BucketResponse {
 	return BucketResponse{
 		ID:               b.ID,
-		APIKeyID:         b.APIKeyID,
 		Name:             b.Name,
 		Visibility:       string(b.Visibility),
 		MaxFileSizeBytes: b.MaxFileSizeBytes,
@@ -125,7 +124,6 @@ func (b *Bucket) Sanitized() BucketResponse {
 
 type BucketResponse struct {
 	ID               uuid.UUID `json:"id"`
-	APIKeyID         uuid.UUID `json:"apiKeyId"`
 	Name             string    `json:"name"`
 	Visibility       string    `json:"visibility"`
 	MaxFileSizeBytes int64     `json:"maxFileSizeBytes"`

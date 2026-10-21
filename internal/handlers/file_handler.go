@@ -23,7 +23,7 @@ type FileHandler struct {
 	log      *zap.Logger
 }
 
-func NewFileHandler(uc usecase.FileUsecase, _ interface{}, nats *natsclient.NATSClient, log *zap.Logger) *FileHandler {
+func NewFileHandler(uc usecase.FileUsecase, nats *natsclient.NATSClient, log *zap.Logger) *FileHandler {
 	return &FileHandler{uc: uc, nats: nats, validate: validator.New(), log: log}
 }
 

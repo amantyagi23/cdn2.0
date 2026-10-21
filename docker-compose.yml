@@ -87,35 +87,6 @@ services:
     networks:
       - cdn-alpha-network
 
-  minio:
-    # Official MinIO image — use a pinned release tag in production.
-    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
-    container_name: cdn-alpha-minio
-    restart: unless-stopped
-
-    command: server /data --console-address ":9001"
-
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-
-    ports:
-      - "${MINIO_API_PORT}:9000"
-      - "${MINIO_CONSOLE_PORT}:9001"
-
-    volumes:
-      - cdn_alpha_minio:/data
-
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
-
-    networks:
-      - cdn-alpha-network
-
   api:
     build:
       context: .
@@ -137,8 +108,6 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
-      minio:
-        condition: service_healthy
 
     networks:
       - cdn-alpha-network
@@ -152,9 +121,6 @@ volumes:
 
   cdn_alpha_nats:
     name: cdn_alpha_nats
-
-  cdn_alpha_minio:
-    name: cdn_alpha_minio
 
 networks:
   cdn-alpha-network:

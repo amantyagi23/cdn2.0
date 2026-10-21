@@ -10,7 +10,7 @@ import (
 
 	"github.com/amantyagi23/cdn-network/internal/domain/bucket"
 	"github.com/amantyagi23/cdn-network/internal/domain/file"
-	"github.com/amantyagi23/cdn-network/internal/infrastructure/minio"
+	"github.com/amantyagi23/cdn-network/internal/infrastructure/storage"
 	"github.com/amantyagi23/cdn-network/internal/repos"
 	"github.com/amantyagi23/cdn-network/pkg/cache"
 	"github.com/google/uuid"
@@ -69,7 +69,7 @@ type FileUsecase interface {
 type fileUsecase struct {
 	fileRepo      *repos.FileRepository
 	bucketRepo    *repos.BucketRepository
-	minio         *minio.MinIOClient
+	storage       *storage.StorageClient
 	cache         cache.Store
 	publicBaseURL string // e.g. "https://cdn.example.com" – no trailing slash
 	log           *zap.Logger
@@ -78,7 +78,7 @@ type fileUsecase struct {
 func NewFileUsecase(
 	fileRepo *repos.FileRepository,
 	bucketRepo *repos.BucketRepository,
-	minio *minio.MinIOClient,
+	storage *storage.StorageClient,
 	redisCache cache.Store,
 	publicBaseURL string,
 	log *zap.Logger,
@@ -86,7 +86,7 @@ func NewFileUsecase(
 	return &fileUsecase{
 		fileRepo:      fileRepo,
 		bucketRepo:    bucketRepo,
-		minio:         minio,
+		storage:       storage,
 		cache:         redisCache,
 		publicBaseURL: strings.TrimRight(publicBaseURL, "/"),
 		log:           log,
@@ -94,11 +94,35 @@ func NewFileUsecase(
 }
 
 // objectKey generates a date-partitioned, collision-free object key.
+// The client-supplied filename is used only as a human-readable suffix;
+// a UUID prefix guarantees uniqueness and prevents collisions.  All
+// path-traversal sequences and unsafe characters are stripped so the
+// resulting key is safe to use as a storage path component.
 func objectKey(original string) string {
 	now := time.Now().UTC()
-	clean := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(original)), " ", "-")
-	clean = filepath.Base(clean)
-	return fmt.Sprintf("%04d/%02d/%s-%s", now.Year(), int(now.Month()), uuid.NewString(), clean)
+	// Take only the base name — discards any directory component the
+	// client may have supplied (e.g. "../../etc/passwd").
+	base := filepath.Base(strings.TrimSpace(original))
+	if base == "." || base == ".." || base == "/" {
+		base = "file"
+	}
+	// Lower-case and replace spaces with hyphens for readability.
+	base = strings.ReplaceAll(strings.ToLower(base), " ", "-")
+	// Keep only safe URL/filesystem characters: alphanumeric, hyphen,
+	// underscore, and a single dot for the extension.
+	var sb strings.Builder
+	for _, r := range base {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			sb.WriteRune(r)
+		} else {
+			sb.WriteRune('-')
+		}
+	}
+	safe := sb.String()
+	if safe == "" || safe == "." {
+		safe = "file"
+	}
+	return fmt.Sprintf("%04d/%02d/%s-%s", now.Year(), int(now.Month()), uuid.NewString(), safe)
 }
 
 func (uc *fileUsecase) RegisterFile(ctx context.Context, in RegisterFileInput) (*file.FileResponse, error) {
@@ -200,7 +224,7 @@ func (uc *fileUsecase) RequestUploadURL(ctx context.Context, in RegisterFileInpu
 	}
 
 	const uploadExpiry = 15 * time.Minute
-	presignURL, err := uc.minio.PresignedPutObject(ctx, b.MinioBucketName, key, uploadExpiry)
+	presignURL, err := uc.storage.PresignedPutObject(ctx, b.StorageName, key, uploadExpiry)
 	if err != nil {
 		return nil, fmt.Errorf("RequestUploadURL: presign: %w", err)
 	}
@@ -226,9 +250,9 @@ func (uc *fileUsecase) CompleteUpload(ctx context.Context, fileID uuid.UUID) (*f
 		return nil, err
 	}
 
-	info, err := uc.minio.StatObject(ctx, b.MinioBucketName, f.ObjectKey)
+	info, err := uc.storage.StatObject(ctx, b.StorageName, f.ObjectKey)
 	if err != nil {
-		if minio.IsNotFound(err) {
+		if storage.IsNotFound(err) {
 			return nil, fmt.Errorf("CompleteUpload: object not yet uploaded")
 		}
 		return nil, fmt.Errorf("CompleteUpload: stat: %w", err)
@@ -272,7 +296,7 @@ func (uc *fileUsecase) UploadFile(ctx context.Context, in UploadFileInput) (*fil
 
 	// Stream bytes to MinIO.  When the client provided the exact size use the
 	// fast path; fall back to streaming upload for unknown sizes (size == 0).
-	opts := minio.PutObjectOptions{
+	opts := storage.PutObjectOptions{
 		ContentType: in.ContentType,
 	}
 	if in.CacheControl != nil {
@@ -280,22 +304,22 @@ func (uc *fileUsecase) UploadFile(ctx context.Context, in UploadFileInput) (*fil
 	}
 	opts.UserMetadata = map[string]string{"original-filename": in.OriginalFilename}
 
-	var uploadInfo interface{ GetETag() string }
+	var etag string
 	if in.SizeBytes > 0 {
-		info, err := uc.minio.PutObject(ctx, b.MinioBucketName, key, in.Reader, in.SizeBytes, opts)
+		info, err := uc.storage.PutObject(ctx, b.StorageName, key, in.Reader, in.SizeBytes, opts)
 		if err != nil {
-			return nil, fmt.Errorf("UploadFile: minio put: %w", err)
+			return nil, fmt.Errorf("UploadFile: storage put: %w", err)
 		}
-		uploadInfo = minioInfoAdapter{info.ETag}
+		etag = info.ETag
 	} else {
-		info, err := uc.minio.PutObjectStreaming(ctx, b.MinioBucketName, key, in.Reader, opts)
+		info, err := uc.storage.PutObjectStreaming(ctx, b.StorageName, key, in.Reader, opts)
 		if err != nil {
-			return nil, fmt.Errorf("UploadFile: minio put streaming: %w", err)
+			return nil, fmt.Errorf("UploadFile: storage put streaming: %w", err)
 		}
-		uploadInfo = minioInfoAdapter{info.ETag}
+		etag = info.ETag
 	}
 
-	f.SetETag(uploadInfo.GetETag())
+	f.SetETag(etag)
 	if err := uc.fileRepo.Update(ctx, f); err != nil {
 		return nil, fmt.Errorf("UploadFile: update etag: %w", err)
 	}
@@ -325,12 +349,6 @@ func (uc *fileUsecase) MarkFileDeleted(ctx context.Context, fileID uuid.UUID) er
 	return nil
 }
 
-// minioInfoAdapter wraps a plain ETag string so both upload paths share the
-// same updateETag call site above.
-type minioInfoAdapter struct{ etag string }
-
-func (a minioInfoAdapter) GetETag() string { return a.etag }
-
 // GetFileURL returns a URL that can be used to view or download the file.
 //
 //   - Public bucket  → permanent CDN delivery URL: <publicBaseURL>/cdn/<objectKey>
@@ -353,7 +371,7 @@ func (uc *fileUsecase) GetFileURL(ctx context.Context, fileID uuid.UUID) (*FileU
 
 	// Private: generate a presigned GET URL.
 	const expiry = 15 * time.Minute
-	presignURL, err := uc.minio.PresignedGetObject(ctx, b.MinioBucketName, f.ObjectKey, expiry, nil)
+	presignURL, err := uc.storage.PresignedGetObject(ctx, b.StorageName, f.ObjectKey, expiry, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GetFileURL: presign: %w", err)
 	}

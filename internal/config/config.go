@@ -35,16 +35,16 @@ type Config struct {
 	NATSURL         string
 	NATSMonitorPort string
 
-	// MinIO
-	MinIOEndpoint  string // host:port, NO scheme
-	MinIOAccessKey string
-	MinIOSecretKey string
-	MinIOUseSSL    bool
-	MinIORegion    string
-
+	StorageSigningSecret string
+	StoragePublicBaseURL string
 	// External
 	BackendURL    string
 	PublicBaseURL string // base URL for public CDN file links, e.g. "https://cdn.example.com"
+
+	// CDNLocalDomain is the domain used as a fallback when the request
+	// host is localhost or a bare IP (dev / smoke-test mode).
+	// Leave empty to disable the fallback.
+	CDNLocalDomain string
 
 	// SMTP
 	SMTPHost     string
@@ -56,7 +56,6 @@ type Config struct {
 
 func Load() *Config {
 	redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
-	minioUseSSL, _ := strconv.ParseBool(getEnv("MINIO_USE_SSL", "false"))
 
 	return &Config{
 		Production: getEnv("APP_ENV", "development") == "production",
@@ -85,18 +84,12 @@ func Load() *Config {
 		NATSURL:         getEnv("NATS_URL", "nats://nats:4222"),
 		NATSMonitorPort: getEnv("NATS_MONITOR_PORT", "8222"),
 
-		// MINIO_ENDPOINT is the SDK's host:port (no scheme).
-		// In compose this is "minio:9000"; locally "localhost:9000".
-		// We derive it from MINIO_API_PORT too, so setting only the port works.
-		MinIOEndpoint: getEnv("MINIO_ENDPOINT",
-			getEnv("MINIO_HOST", "localhost")+":"+getEnv("MINIO_API_PORT", "9000")),
-		MinIOAccessKey: getEnv("MINIO_ACCESS_KEY", getEnv("MINIO_ROOT_USER", "")),
-		MinIOSecretKey: getEnv("MINIO_SECRET_KEY", getEnv("MINIO_ROOT_PASSWORD", "")),
-		MinIOUseSSL:    minioUseSSL,
-		MinIORegion:    getEnv("MINIO_REGION", ""),
+		StorageSigningSecret: getEnv("STORAGE_SIGNING_SECRET", ""),
+		StoragePublicBaseURL: getEnv("STORAGE_PUBLIC_BASE_URL", ""),
 
-		BackendURL:    getEnv("BACKEND_URL", "http://localhost:4500/api/v1"),
-		PublicBaseURL: getEnv("PUBLIC_BASE_URL", "http://localhost:4500"),
+		BackendURL:     getEnv("BACKEND_URL", "http://localhost:4500/api/v1"),
+		PublicBaseURL:  getEnv("PUBLIC_BASE_URL", "http://localhost:4500"),
+		CDNLocalDomain: getEnv("CDN_LOCAL_DOMAIN", ""),
 
 		SMTPHost:     getEnv("SMTP_HOST", ""),
 		SMTPPort:     getEnv("SMTP_PORT", "587"),
